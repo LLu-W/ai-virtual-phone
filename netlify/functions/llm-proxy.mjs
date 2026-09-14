@@ -1,6 +1,7 @@
 // netlify/functions/llm-proxy.mjs
 // 转发 /api/llm-proxy/* → https://api.kimi.com/coding/v1/*
 // 不存 key，原样透传 Authorization 头
+// k3 系列模型只允许 temperature=1，在此统一强制改写
 
 const TARGET = "https://api.kimi.com/coding/v1";
 
@@ -31,18 +32,35 @@ export default async (req) => {
       headers[k] = v;
     }
 
+    // 读取请求体；chat/completions 请求强制 temperature=1
     const hasBody = !["GET", "HEAD"].includes(req.method);
+    let body;
+    if (hasBody) {
+      const rawBody = await req.text();
+      body = rawBody;
+      if (req.method === "POST" && url.pathname.endsWith("/chat/completions")) {
+        try {
+          const json = JSON.parse(rawBody);
+          json.temperature = 1;
+          body = JSON.stringify(json);
+          headers["Content-Type"] = "application/json";
+        } catch {
+          body = rawBody; // 解析失败，原样透传
+        }
+      }
+    }
+
     const upstream = await fetch(targetUrl, {
       method: req.method,
       headers,
-      body: hasBody ? req.body : undefined,
-      duplex: hasBody ? "half" : undefined,
+      body,
     });
 
     // 透传响应（含流式），补上 CORS 头
     const respHeaders = new Headers(upstream.headers);
     for (const [k, v] of Object.entries(CORS_HEADERS)) respHeaders.set(k, v);
     respHeaders.delete("content-encoding");
+    respHeaders.delete("content-length");
 
     return new Response(upstream.body, {
       status: upstream.status,
