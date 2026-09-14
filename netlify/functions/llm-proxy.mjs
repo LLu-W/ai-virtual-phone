@@ -31,6 +31,7 @@ export default async (req) => {
 
     const hasBody = !["GET", "HEAD"].includes(req.method);
     let body;
+    let sentJson = null;
     if (hasBody) {
       const rawBody = await req.text();
       body = rawBody;
@@ -41,6 +42,7 @@ export default async (req) => {
           json.top_p = 0.95;      // k3 只接受 0.95
           body = JSON.stringify(json);
           headers["Content-Type"] = "application/json";
+          sentJson = json;
         } catch {
           body = rawBody;
         }
@@ -53,6 +55,21 @@ export default async (req) => {
       body,
     });
 
+    // 记录失败请求：状态码 + 报错内容 + 我们发送的参数（不含 key 和消息内容）
+    if (!upstream.ok) {
+      const errText = await upstream.text();
+      const paramSummary = sentJson
+        ? JSON.stringify(Object.keys(sentJson).filter(k => k !== "messages"))
+        : "(non-JSON)";
+      console.log(`[llm-proxy] UPSTREAM ${upstream.status} ${url.pathname}`);
+      console.log(`[llm-proxy] error: ${errText.slice(0, 500)}`);
+      console.log(`[llm-proxy] sent params: ${paramSummary}`);
+      return new Response(errText, {
+        status: upstream.status,
+        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+      });
+    }
+
     const respHeaders = new Headers(upstream.headers);
     for (const [k, v] of Object.entries(CORS_HEADERS)) respHeaders.set(k, v);
     respHeaders.delete("content-encoding");
@@ -63,6 +80,7 @@ export default async (req) => {
       headers: respHeaders,
     });
   } catch (err) {
+    console.log(`[llm-proxy] EXCEPTION: ${String(err)}`);
     return new Response(JSON.stringify({ error: String(err) }), {
       status: 502,
       headers: { "Content-Type": "application/json", ...CORS_HEADERS },
